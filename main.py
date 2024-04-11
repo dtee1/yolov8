@@ -1,23 +1,19 @@
 import streamlit as st
 import cv2
 import numpy as np
-import time
-import torch
-from PIL import Image
-from torchvision.transforms import functional as F
-from vidgear.gears import CamGear
+import asyncio
+from ultralytics import YOLO
+import requests
+import re
 
 # Load YOLOv5 model
-model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
+model = YOLO('yolov8n.pt')
 
 # Streamlit app title
 st.title("YouTube Live Stream Object Detection")
 
 # Add YouTube Video URL as input source
-video_url = "https://www.youtube.com/watch?v=KyQAB-TKOVA"
-
-# Initialize CamGear for streaming
-stream = CamGear(source=video_url, backend =0,  time_delay=1, stream_mode=True).start()
+video_url = "https://www.youtube.com/watch?v=dIChLG4_WNs"
 
 # Set up Streamlit columns for layout
 col1, col2 = st.columns([1, 3])
@@ -30,29 +26,62 @@ col1.video(video_url)
 col2.title("Object Detection")
 latest_frame = col2.empty()
 
-while True:
-    # Read frames from the stream
-    frame = stream.read()
+# Function to fetch video stream URL from YouTube video page
+def fetch_video_stream_url(youtube_url):
+    try:
+        # Send GET request to YouTube video page
+        response = requests.get(youtube_url)
 
-    # Check if frame is not None
-    if frame is not None:
-        # Convert frame to PIL Image
-        pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        # Extract video stream URL using regular expression
+        pattern = r'"hlsManifestUrl":"(.*?)"'
+        match = re.search(pattern, response.text)
+        if match:
+            video_stream_url = match.group(1)
+            return video_stream_url
+        else:
+            print("Error: Video stream URL not found")
+            return None
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
 
+# Asynchronous function to capture frame using OpenCV
+async def capture_frame(video_stream_url):
+    try:
+        # Open video stream using OpenCV
+        cap = cv2.VideoCapture(video_stream_url)
+
+        while True:
+            # Read the frame
+            ret, frame = cap.read()
+            
+            # If frame is read successfully, yield it
+            if ret:
+                yield frame
+            else:
+                print("Error: Failed to read frame")
+                break
+    except Exception as e:
+        print(f"Error: {e}")
+
+# Asynchronous function to perform object detection
+async def detect_objects():
+    url = fetch_video_stream_url(video_url)
+    async for frame in capture_frame(url):
         # Perform object detection
-        results = model(pil_image)
-
-        # Draw annotations on the frame
-        annotated_frame = results.render()[0]
-
-        # Convert the annotated frame back to OpenCV format
-        annotated_frame = cv2.cvtColor(np.array(annotated_frame), cv2.COLOR_RGB2BGR)
-
+        frame_resized = cv2.resize(frame, (640, 480))
+        results = model.predict(source=frame_resized)
+        res_plotted = results[0].plot()
+        
         # Display the annotated frame on the right side
-        latest_frame.image(annotated_frame, channels="BGR", use_column_width=True)
-    
-    # Delay for 0.2 seconds
-    time.sleep(0.1)
+        latest_frame.image(res_plotted, use_column_width=True)
+        
 
-# Safely close the video stream
-stream.stop()
+# Run the main coroutine
+async def main():
+    await asyncio.gather(
+        detect_objects()
+    )
+
+# Run the main coroutine
+asyncio.run(main())
